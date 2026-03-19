@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 
 @RestController
 @RequestMapping("/active")
@@ -19,36 +19,45 @@ public class ActiveController {
 
     Logger logger = LoggerFactory.getLogger(ActiveController.class);
     private final RestTemplate restTemplate;
-    private final CircuitBreakerFactory circuitBreakerFactory;
 
     @Autowired
-    public ActiveController(RestTemplate restTemplate, CircuitBreakerFactory circuitBreakerFactory) {
+    public ActiveController(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
-        this.circuitBreakerFactory = circuitBreakerFactory;
     }
 
     @GetMapping
+    @CircuitBreaker(name = "dummyjson-window", fallbackMethod = "getActiveFallback")
     public ResponseEntity<String> getActive() {
-        logger.info("Invoking upstream service from /active endpoint");
+        logger.info("Invoking upstream service from /active endpoint (annotation-based)");
         String url = "https://dummyjson.com/test";
         HttpHeaders headers = new HttpHeaders();
         HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
-        // Use programmatic circuit breaker to avoid relying on AOP/annotation proxies
-        ResponseEntity<String> response = circuitBreakerFactory.create("dummyjson").run(
-                () -> {
-                    logger.info("Calling upstream URL: {}", url);
-                    ResponseEntity<String> resp = restTemplate.exchange(url, HttpMethod.GET, requestEntity, String.class);
-                    logger.info("Upstream returned status={}, body={}", resp.getStatusCode(), resp.getBody());
-                    return resp;
-                },
-                throwable -> {
-                    logger.error("Upstream call failed inside circuit breaker. Reason: {}", throwable.toString());
-                    return getLocal();
-                }
-        );
+        logger.info("Calling upstream URL: {}", url);
+        ResponseEntity<String> resp = restTemplate.exchange(url, HttpMethod.GET, requestEntity, String.class);
+        logger.info("Upstream returned status={}, body={}", resp.getStatusCode(), resp.getBody());
+        return resp;
+    }
 
-        return ResponseEntity.status(response.getStatusCode()).body(response.getBody());
+    // New endpoint: uses a COUNT_BASED circuit breaker configured via application.yaml
+    @GetMapping("/count")
+    @CircuitBreaker(name = "dummyjson-count", fallbackMethod = "getActiveFallback")
+    public ResponseEntity<String> getActiveCountBased() {
+        logger.info("Invoking count-based upstream service from /active/count endpoint (annotation-based)");
+        String url = "https://dummyjson.com/test";
+        HttpHeaders headers = new HttpHeaders();
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+
+        logger.info("[count-based] Calling upstream URL: {}", url);
+        ResponseEntity<String> resp = restTemplate.exchange(url, HttpMethod.GET, requestEntity, String.class);
+        logger.info("[count-based] Upstream returned status={}, body={}", resp.getStatusCode(), resp.getBody());
+        return resp;
+    }
+
+    // Fallback method used by annotated circuit breakers. Signature: same return type + Throwable as last param
+    public ResponseEntity<String> getActiveFallback(Throwable t) {
+        logger.error("Annotated circuit breaker fallback invoked. Reason:", t);
+        return getLocal();
     }
 
     // Local endpoint that returns an 'up' response when upstream is unavailable
